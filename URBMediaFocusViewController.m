@@ -9,7 +9,7 @@
 #import <Accelerate/Accelerate.h>
 #import "URBMediaFocusViewController.h"
 
-static const CGFloat __overlayAlpha = 0.7f;						// opacity of the black overlay displayed below the focused image
+static const CGFloat __overlayAlpha = 0.6f;						// opacity of the black overlay displayed below the focused image
 static const CGFloat __animationDuration = 0.18f;				// the base duration for present/dismiss animations (except physics-related ones)
 static const CGFloat __maximumDismissDelay = 0.5f;				// maximum time of delay (in seconds) between when image view is push out and dismissal animations begin
 static const CGFloat __resistance = 0.0f;						// linear resistance applied to the image’s dynamic item behavior
@@ -27,6 +27,10 @@ static const CGFloat __blurTintColorAlpha = 0.2f;				// defines how much to tint
 @interface UIView (URBMediaFocusViewController)
 - (UIImage *)snapshotImageWithScale:(CGFloat)scale;
 @end
+
+
+/// Uncomment the following line to display borders around some views for easier debugging
+/// #define URBMediaFocusViewControllerShowBorders
 
 /**
  Pulled from Apple's UIImage+ImageEffects category, but renamed to avoid potential selector name conflicts.
@@ -60,8 +64,10 @@ static const CGFloat __blurTintColorAlpha = 0.2f;				// defines how much to tint
 @property (nonatomic, strong) NSURLConnection *urlConnection;
 @property (nonatomic, strong) NSMutableData *urlData;
 
-@property (nonatomic, strong) UIView *blurredSnapshotView;
-@property (nonatomic, strong) UIView *snapshotView;
+@property (nonatomic, strong) UIImageView *blurredSnapshotView;
+@property (nonatomic, strong) UIView *snapshotsContainerView;
+@property (nonatomic, strong) UIImageView *snapshotView;
+@property (nonatomic, strong) UIView *originalTargetContentHidingView;
 
 @end
 
@@ -97,80 +103,186 @@ static const CGFloat __blurTintColorAlpha = 0.2f;				// defines how much to tint
 }
 
 - (void)setup {
-	self.view.frame = self.keyWindow.bounds;
-	
-	self.backgroundView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, CGRectGetWidth(self.keyWindow.frame), CGRectGetHeight(self.keyWindow.frame))];
-	self.backgroundView.backgroundColor = [UIColor colorWithWhite:0.0f alpha:0.6f];
-	self.backgroundView.alpha = 0.0f;
-	self.backgroundView.autoresizingMask = UIViewAutoresizingFlexibleHeight|UIViewAutoresizingFlexibleWidth;
-	[self.view addSubview:self.backgroundView];
-	
-	self.scrollView = [[UIScrollView alloc] initWithFrame:self.view.bounds];
-	self.scrollView.backgroundColor = [UIColor clearColor];
-	self.scrollView.delegate = self;
-	self.scrollView.showsHorizontalScrollIndicator = NO;
-	self.scrollView.showsVerticalScrollIndicator = NO;
-	self.scrollView.scrollEnabled = NO;
-	[self.view addSubview:self.scrollView];
-	
-	self.imageView = [[UIImageView alloc] initWithFrame:CGRectMake(0, 0, 50.0, 50.0)];
-	self.imageView.contentMode = UIViewContentModeScaleAspectFit;
-	self.imageView.alpha = 0.0f;
-	self.imageView.userInteractionEnabled = YES;
-	[self.scrollView addSubview:self.imageView];
-	
-	/* setup gesture recognizers */
-	// double tap gesture to return scaled image back to center for easier dismissal
-	self.doubleTapRecognizer = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleDoubleTapGesture:)];
-	self.doubleTapRecognizer.delegate = self;
-	self.doubleTapRecognizer.numberOfTapsRequired = 2;
-	self.doubleTapRecognizer.numberOfTouchesRequired = 1;
-	[self.imageView addGestureRecognizer:self.doubleTapRecognizer];
-	
-	// tap recognizer on area outside image view for dismissing
-	self.tapRecognizer = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleDismissFromTap:)];
-	self.tapRecognizer.delegate = self;
-	self.tapRecognizer.numberOfTapsRequired = 1;
-	self.tapRecognizer.numberOfTouchesRequired = 1;
-	[self.tapRecognizer requireGestureRecognizerToFail:self.doubleTapRecognizer];
-	[self.view addGestureRecognizer:self.tapRecognizer];
-	
-	// only add pan gesture and physics stuff if we can (e.g., iOS 7+)
-	if (NSClassFromString(@"UIDynamicAnimator")) {
-		// pan gesture to handle the physics
-		self.panRecognizer = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePanGesture:)];
-		self.panRecognizer.delegate = self;
-		[self.imageView addGestureRecognizer:self.panRecognizer];
-		
-		/* UIDynamics stuff */
-		self.animator = [[UIDynamicAnimator alloc] initWithReferenceView:self.view];
-		self.animator.delegate = self;
-		
-		// snap behavior to keep image view in the center as needed
-		self.snapBehavior = [[UISnapBehavior alloc] initWithItem:self.imageView snapToPoint:self.view.center];
-		self.snapBehavior.damping = 1.0f;
-		
-		self.pushBehavior = [[UIPushBehavior alloc] initWithItems:@[self.imageView] mode:UIPushBehaviorModeInstantaneous];
-		self.pushBehavior.angle = 0.0f;
-		self.pushBehavior.magnitude = 0.0f;
-		
-		self.itemBehavior = [[UIDynamicItemBehavior alloc] initWithItems:@[self.imageView]];
-		self.itemBehavior.elasticity = 0.0f;
-		self.itemBehavior.friction = 0.2f;
-		self.itemBehavior.allowsRotation = YES;
-		self.itemBehavior.density = __density;
-		self.itemBehavior.resistance = __resistance;
-	}
-	else {
-		// add tap gesture to image to also dismiss since we don't have UIDynamics to flick out of view
-		self.photoTapRecognizer = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleDismissFromTap:)];
-		self.photoTapRecognizer.delegate = self;
-		self.photoTapRecognizer.numberOfTapsRequired = 1;
-		self.photoTapRecognizer.numberOfTouchesRequired = 1;
-		[self.photoTapRecognizer requireGestureRecognizerToFail:self.doubleTapRecognizer];
-		[self.imageView addGestureRecognizer:self.photoTapRecognizer];
-	}
+    self.backgroundView = [[UIView alloc] initWithFrame:self.view.bounds];
+    self.backgroundView.backgroundColor = [UIColor colorWithWhite:0.0f alpha:__overlayAlpha];
+    self.backgroundView.alpha = 0.0f;
+    self.backgroundView.autoresizingMask = UIViewAutoresizingFlexibleHeight | UIViewAutoresizingFlexibleWidth;
+    [self.view addSubview:self.backgroundView];
+    
+    self.scrollView = [[UIScrollView alloc] initWithFrame:self.view.bounds];
+    self.scrollView.backgroundColor = [UIColor clearColor];
+    self.scrollView.delegate = self;
+    self.scrollView.showsHorizontalScrollIndicator = NO;
+    self.scrollView.showsVerticalScrollIndicator = NO;
+    self.scrollView.scrollEnabled = NO;
+    self.scrollView.autoresizingMask = UIViewAutoresizingFlexibleHeight | UIViewAutoresizingFlexibleWidth;
+    [self.view addSubview:self.scrollView];
+    
+    self.imageView = [[UIImageView alloc] initWithFrame:CGRectMake(0, 0, 50.0, 50.0)];
+    self.imageView.contentMode = UIViewContentModeScaleAspectFit;
+    self.imageView.autoresizingMask = UIViewAutoresizingNone;
+    self.imageView.alpha = 0.0f;
+    self.imageView.userInteractionEnabled = YES;
+    [self.scrollView addSubview:self.imageView];
+    
+    /* setup gesture recognizers */
+    // double tap gesture to return scaled image back to center for easier dismissal
+    self.doubleTapRecognizer = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleDoubleTapGesture:)];
+    self.doubleTapRecognizer.delegate = self;
+    self.doubleTapRecognizer.numberOfTapsRequired = 2;
+    self.doubleTapRecognizer.numberOfTouchesRequired = 1;
+    [self.imageView addGestureRecognizer:self.doubleTapRecognizer];
+    
+    // tap recognizer on area outside image view for dismissing
+    self.tapRecognizer = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleDismissFromTap:)];
+    self.tapRecognizer.delegate = self;
+    self.tapRecognizer.numberOfTapsRequired = 1;
+    self.tapRecognizer.numberOfTouchesRequired = 1;
+    [self.tapRecognizer requireGestureRecognizerToFail:self.doubleTapRecognizer];
+    [self.view addGestureRecognizer:self.tapRecognizer];
+    
+    // only add pan gesture and physics stuff if we can (e.g., iOS 7+)
+    if (NSClassFromString(@"UIDynamicAnimator")) {
+        // pan gesture to handle the physics
+        self.panRecognizer = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePanGesture:)];
+        self.panRecognizer.delegate = self;
+        [self.imageView addGestureRecognizer:self.panRecognizer];
+        
+        /* UIDynamics stuff */
+        self.animator = [[UIDynamicAnimator alloc] initWithReferenceView:self.view];
+        self.animator.delegate = self;
+        
+        // snap behavior to keep image view in the center as needed
+        self.snapBehavior = [[UISnapBehavior alloc] initWithItem:self.imageView snapToPoint:self.view.center];
+        self.snapBehavior.damping = 1.0f;
+        
+        self.pushBehavior = [[UIPushBehavior alloc] initWithItems:@[self.imageView] mode:UIPushBehaviorModeInstantaneous];
+        self.pushBehavior.angle = 0.0f;
+        self.pushBehavior.magnitude = 0.0f;
+        
+        self.itemBehavior = [[UIDynamicItemBehavior alloc] initWithItems:@[self.imageView]];
+        self.itemBehavior.elasticity = 0.0f;
+        self.itemBehavior.friction = 0.2f;
+        self.itemBehavior.allowsRotation = YES;
+        self.itemBehavior.density = __density;
+        self.itemBehavior.resistance = __resistance;
+    } else {
+        // add tap gesture to image to also dismiss since we don't have UIDynamics to flick out of view
+        self.photoTapRecognizer = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleDismissFromTap:)];
+        self.photoTapRecognizer.delegate = self;
+        self.photoTapRecognizer.numberOfTapsRequired = 1;
+        self.photoTapRecognizer.numberOfTouchesRequired = 1;
+        [self.photoTapRecognizer requireGestureRecognizerToFail:self.doubleTapRecognizer];
+        [self.imageView addGestureRecognizer:self.photoTapRecognizer];
+    }
+    
+#if defined(DEBUG) && defined(URBMediaFocusViewControllerShowBorders)
+    [self.scrollView.layer setBorderColor:[[UIColor colorWithRed:1.0 green:0. blue:0.0 alpha:0.5] CGColor]];
+    [self.scrollView.layer setBorderWidth:1];
+    [self.imageView.layer setBorderColor:[[UIColor greenColor] CGColor]];
+    [self.imageView.layer setBorderWidth:1];
+#endif
 }
+
+#pragma mark Layout
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    
+    self.view.frame = [self keyView].bounds;
+    
+    [self updateScrollViewScalesAndImagePosition];
+    [self layoutBackground];
+}
+
+- (void)updateScrollViewScalesAndImagePosition {
+    // update scrollView.contentSize to the size of the image
+    UIImage *image = self.imageView.image;
+    
+    self.scrollView.contentSize = image.size;
+    CGFloat scaleWidth = CGRectGetWidth(self.scrollView.frame) / self.scrollView.contentSize.width;
+    CGFloat scaleHeight = CGRectGetHeight(self.scrollView.frame) / self.scrollView.contentSize.height;
+    CGFloat scale = MIN(scaleWidth, scaleHeight);
+    
+    self.scrollView.contentOffset = CGPointZero;
+    
+    if (scale < 1.0f) {
+        self.scrollView.minimumZoomScale = 1.0f;
+        self.scrollView.maximumZoomScale = 1.0f / scale;
+    } else {
+        self.scrollView.minimumZoomScale = 1.0f / scale;
+        self.scrollView.maximumZoomScale = 1.0f;
+    }
+    
+    self.scrollView.zoomScale = 1.0;
+    // image view's destination frame is the size of the image capped to the width/height of the target view
+    CGSize scaledImageSize = CGSizeMake(image.size.width * scale, image.size.height * scale);
+    self.imageView.bounds = CGRectMake(0, 0, scaledImageSize.width, scaledImageSize.height);
+    [self centerScrollViewContents];
+    _originalFrame = self.imageView.frame;
+}
+
+- (void)centerScrollViewContents {
+    // from apple photoScroller example
+    // center the zoom view as it becomes smaller than the size of the screen
+    CGSize boundsSize = self.scrollView.bounds.size;
+    CGRect frameToCenter = self.imageView.frame;
+    
+    // center horizontally
+    if (frameToCenter.size.width < boundsSize.width) {
+        frameToCenter.origin.x = (boundsSize.width - frameToCenter.size.width) / 2;
+    } else {
+        frameToCenter.origin.x = 0;
+    }
+    
+    // center vertically
+    if (frameToCenter.size.height < boundsSize.height) {
+        frameToCenter.origin.y = (boundsSize.height - frameToCenter.size.height) / 2;
+    } else {
+        frameToCenter.origin.y = 0;
+    }
+    
+    self.imageView.frame = frameToCenter;
+}
+
+- (void)layoutBackground {
+    // we enlarge the hiding view beyond the beyond its super view to cover it during rotations
+    [self.originalTargetContentHidingView setFrame:CGRectInset(self.originalTargetContentHidingView.superview.bounds, -100, -100)];
+    
+    if (self.targetViewController) {
+        CGPoint center = CGPointMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds));
+        CGRect boundsForSnapShoot = self.view.bounds;
+        CGFloat blurInset = [self.snapshotView frame].origin.y;
+        boundsForSnapShoot.size.width += blurInset * 2.0;
+        boundsForSnapShoot.size.height += blurInset * 2.0;
+        
+        [self.snapshotsContainerView setBounds:boundsForSnapShoot];
+        [self.snapshotsContainerView setCenter:center];
+    }
+}
+
+#pragma mark UIInterfaceOrientation / Rotation
+
+- (void)willAnimateRotationToInterfaceOrientation:(UIInterfaceOrientation)toInterfaceOrientation duration:(NSTimeInterval)duration {
+    [super willAnimateRotationToInterfaceOrientation:toInterfaceOrientation duration:duration];
+    // we hide the snapshot during rotation
+    // because the originalTargetContentHidingView is still visible the image will rotate on black
+    [self.snapshotsContainerView setAlpha:0.0];
+}
+
+- (void)didRotateFromInterfaceOrientation:(UIInterfaceOrientation)fromInterfaceOrientation {
+    [super didRotateFromInterfaceOrientation:fromInterfaceOrientation];
+    
+    // after updating the snapshot we animate it back in
+    [self updateSnapshotContents];
+    
+    [UIView animateWithDuration:0.25
+                     animations:^{
+                         [self.snapshotsContainerView setAlpha:1.0];
+                     }];
+}
+
+#pragma mark 
 
 - (void)cancelURLConnectionIfAny {
     if (self.loadingView) {
@@ -190,19 +302,23 @@ static const CGFloat __blurTintColorAlpha = 0.2f;				// defines how much to tint
 	self.fromView = fromView;
 	self.targetViewController = parentViewController;
 	
-	CGRect fromRect = [self.view convertRect:fromView.frame fromView:nil];
+	CGRect fromRect = (self.fromView) ? [self.fromView convertRect:self.fromView.bounds toView:self.targetViewController.view] : CGRectZero;
 	[self showImage:image fromRect:fromRect];
 }
 
 - (void)showImage:(UIImage *)image fromRect:(CGRect)fromRect {
 	[self view]; // make sure view has loaded first
+    if (self.targetViewController) {
+        // ensure that view has same bounds as target view controller
+        self.view.frame = [self keyView].bounds;
+    }
 	_currentOrientation = [UIApplication sharedApplication].statusBarOrientation;
 	self.fromRect = fromRect;
 	
 	self.imageView.transform = CGAffineTransformIdentity;
 	self.imageView.image = image;
 	self.imageView.alpha = 0.2;
-	
+    
 	// create snapshot of background if parallax is enabled
 	if (self.parallaxEnabled) {
 		[self createViewsForParallax];
@@ -212,34 +328,21 @@ static const CGFloat __blurTintColorAlpha = 0.2f;				// defines how much to tint
 		_unhideStatusBarOnDismiss = ![UIApplication sharedApplication].statusBarHidden;
 		[[UIApplication sharedApplication] setStatusBarHidden:YES withAnimation:UIStatusBarAnimationNone];
 	}
-	
-	// update scrollView.contentSize to the size of the image
-	self.scrollView.contentSize = image.size;
-	CGFloat scaleWidth = CGRectGetWidth(self.scrollView.frame) / self.scrollView.contentSize.width;
-	CGFloat scaleHeight = CGRectGetHeight(self.scrollView.frame) / self.scrollView.contentSize.height;
-	CGFloat scale = MIN(scaleWidth, scaleHeight);
-	
-	// image view's destination frame is the size of the image capped to the width/height of the target view
-	CGPoint midpoint = CGPointMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds));
-	CGSize scaledImageSize = CGSizeMake(image.size.width * scale, image.size.height * scale);
-	CGRect targetRect = CGRectMake(midpoint.x - scaledImageSize.width / 2.0, midpoint.y - scaledImageSize.height / 2.0, scaledImageSize.width, scaledImageSize.height);
-	self.imageView.frame = targetRect;
-	
+
+	[self updateScrollViewScalesAndImagePosition];
+
 	// set initial frame of image view to match that of the presenting image
 	//self.imageView.frame = CGRectMake(midpoint.x - image.size.width / 2.0, midpoint.y - image.size.height / 2.0, image.size.width, image.size.height);
-	self.imageView.frame = [self.view convertRect:fromRect fromView:nil];
-	_originalFrame = targetRect;
+	if (self.targetViewController) {
+        // when using the target view controller, both view controllers will have same geometry:
+        self.imageView.bounds = CGRectMake(0, 0, CGRectGetWidth(fromRect), CGRectGetHeight(fromRect));
+        self.imageView.center = CGPointMake(CGRectGetMidX(fromRect), CGRectGetMidY(fromRect));
+    } else {
+        self.imageView.frame = [self.view convertRect:fromRect fromView:nil];
+    }
+    
 	// rotate imageView based on current device orientation
 	[self reposition];
-    
-	if (scale < 1.0f) {
-		self.scrollView.minimumZoomScale = 1.0f;
-		self.scrollView.maximumZoomScale = 1.0f / scale;
-	}
-	else {
-		self.scrollView.minimumZoomScale = 1.0f / scale;
-		self.scrollView.maximumZoomScale = 1.0f;
-	}
 	
 	_minScale = self.scrollView.minimumZoomScale;
 	_maxScale = self.scrollView.maximumZoomScale;
@@ -250,7 +353,18 @@ static const CGFloat __blurTintColorAlpha = 0.2f;				// defines how much to tint
 	[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(deviceOrientationChanged:) name:UIDeviceOrientationDidChangeNotification object:nil];
 	// register with the device that we want to know when the device orientation changes
 	[[UIDevice currentDevice] beginGeneratingDeviceOrientationNotifications];
-	
+    
+    if (self.snapshotsContainerView) {
+        self.originalTargetContentHidingView = [[UIView alloc] initWithFrame:CGRectZero];
+        [self.originalTargetContentHidingView setAutoresizingMask:UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight];
+        [self.originalTargetContentHidingView setBackgroundColor:[UIColor blackColor]];
+    } else {
+        [self setOriginalTargetContentHidingView:nil];
+    }
+    
+    
+    UIView *targetView = [self keyView];
+    
 	if (self.targetViewController) {
 		[self willMoveToParentViewController:self.targetViewController];
 		if ([UIView instancesRespondToSelector:@selector(setTintAdjustmentMode:)]) {
@@ -258,36 +372,34 @@ static const CGFloat __blurTintColorAlpha = 0.2f;				// defines how much to tint
 			[self.targetViewController.view tintColorDidChange];
 		}
 		[self.targetViewController addChildViewController:self];
-		[self.targetViewController.view addSubview:self.view];
-		
-		if (self.snapshotView) {
-			[self.targetViewController.view insertSubview:self.snapshotView belowSubview:self.view];
-			[self.targetViewController.view insertSubview:self.blurredSnapshotView aboveSubview:self.snapshotView];
-		}
-	}
-	else {
+	} else {
 		// add this view to the main window if no targetViewController was set
 		if ([UIView instancesRespondToSelector:@selector(setTintAdjustmentMode:)]) {
 			self.keyWindow.tintAdjustmentMode = UIViewTintAdjustmentModeDimmed;
 			[self.keyWindow tintColorDidChange];
 		}
-		[self.keyWindow addSubview:self.view];
-		
-		if (self.snapshotView) {
-			[self.keyWindow insertSubview:self.snapshotView belowSubview:self.view];
-			[self.keyWindow insertSubview:self.blurredSnapshotView aboveSubview:self.snapshotView];
-		}
 	}
+    
+    if (self.originalTargetContentHidingView) {
+        [targetView addSubview:self.originalTargetContentHidingView];
+    }
+    if (self.snapshotsContainerView) {
+        [targetView addSubview:self.snapshotsContainerView];
+    }
+    
+    [targetView addSubview:self.view];
+    
+    [self layoutBackground];
 	
-	[UIView animateWithDuration:__animationDuration delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
+	[UIView animateWithDuration:__animationDuration delay:0 options:UIViewAnimationOptionCurveEaseOut | UIViewAnimationOptionBeginFromCurrentState animations:^{
 		self.backgroundView.alpha = 1.0f;
 		self.imageView.alpha = 1.0f;
-		self.imageView.frame = targetRect;
+        [self updateScrollViewScalesAndImagePosition];
 		
 		if (self.snapshotView) {
 			self.blurredSnapshotView.alpha = 1.0f;
-			self.blurredSnapshotView.transform = CGAffineTransformScale(CGAffineTransformIdentity, __backgroundScale, __backgroundScale);
-			self.snapshotView.transform = CGAffineTransformScale(CGAffineTransformIdentity, __backgroundScale, __backgroundScale);
+            self.snapshotView.alpha = 0.0;
+			self.snapshotsContainerView.transform = CGAffineTransformScale(CGAffineTransformIdentity, __backgroundScale, __backgroundScale);
 		}
 		
 	} completion:^(BOOL finished) {
@@ -388,72 +500,103 @@ static const CGFloat __blurTintColorAlpha = 0.2f;				// defines how much to tint
 	return [UIApplication sharedApplication].keyWindow;
 }
 
-- (void)createViewsForParallax {
-	// container view for window
-	// inset container view so we can blur the edges, but we also need to scale up so when __backgroundScale is applied, everything lines up
-	CGRect containerFrame = CGRectMake(0, 0, CGRectGetWidth(self.keyWindow.frame) * (1.0f / __backgroundScale), CGRectGetHeight(self.keyWindow.frame) * (1.0f / __backgroundScale));
-	UIView *containerView = [[UIView alloc] initWithFrame:CGRectIntegral(containerFrame)];
-	containerView.backgroundColor = [UIColor blackColor];
-	
-	// add snapshot of window to the container
-	UIImage *windowSnapshot = [self.keyWindow snapshotImageWithScale:[UIScreen mainScreen].scale];
-	UIImageView *windowSnapshotView = [[UIImageView alloc] initWithImage:windowSnapshot];
-	windowSnapshotView.center = containerView.center;
-	[containerView addSubview:windowSnapshotView];
-	containerView.center = self.keyWindow.center;
-	
-	UIImageView *snapshotView;
-	// only add blurred view if radius is above 0
-	if (self.shouldBlurBackground && __blurRadius) {
-		UIImage *snapshot = [containerView snapshotImageWithScale:[UIScreen mainScreen].scale];
-		snapshot = [snapshot URB_applyBlurWithRadius:__blurRadius
-										   tintColor:[UIColor colorWithWhite:0.0f alpha:__blurTintColorAlpha]
-							   saturationDeltaFactor:__blurSaturationDeltaMask
-										   maskImage:nil];
-		snapshotView = [[UIImageView alloc] initWithImage:snapshot];
-		snapshotView.center = containerView.center;
-		snapshotView.alpha = 0.0f;
-		snapshotView.userInteractionEnabled = NO;
-	}
-	
-	self.snapshotView = containerView;
-	self.blurredSnapshotView = snapshotView;
+- (UIView *)keyView {
+    return self.targetViewController.view ? : self.keyWindow;
 }
 
-- (void)adjustFrame {
-	CGRect imageFrame = self.imageView.frame;
-	
-	// snap x sides
-	if (CGRectGetWidth(imageFrame) > CGRectGetWidth(self.view.frame)) {
-		if (CGRectGetMinX(imageFrame) > 0) {
-			imageFrame.origin.x = 0;
-		}
-		else if (CGRectGetMaxX(imageFrame) < CGRectGetWidth(self.view.frame)) {
-			imageFrame.origin.x = CGRectGetWidth(self.view.frame) - CGRectGetWidth(imageFrame);
-		}
-	}
-	else if (self.imageView.center.x != CGRectGetMidX(self.view.frame)) {
-		imageFrame.origin.x = CGRectGetMidX(self.view.frame) - CGRectGetWidth(imageFrame) / 2.0f;
-	}
-	
-	// snap y sides
-	if (CGRectGetHeight(imageFrame) > CGRectGetHeight(self.view.frame)) {
-		if (CGRectGetMinY(imageFrame) > 0) {
-			imageFrame.origin.y = 0;
-		}
-		else if (CGRectGetMaxY(imageFrame) < CGRectGetHeight(self.view.frame)) {
-			imageFrame.origin.y = CGRectGetHeight(self.view.frame) - CGRectGetHeight(imageFrame);
-		}
-	}
-	else if (self.imageView.center.y != CGRectGetMidY(self.view.frame)) {
-		imageFrame.origin.y = CGRectGetMidY(self.view.frame) - CGRectGetHeight(imageFrame) / 2.0f;
-	}
-	
-	[UIView animateWithDuration:0.3f delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
-		self.imageView.frame = imageFrame;
-	} completion:^(BOOL finished) {
-		
-	}];
+- (void)createViewsForParallax {
+    UIView *sourceView = [self keyView];
+    
+    // container view for window
+    // inset container view so we can blur the edges, but we also need to scale up so when __backgroundScale is applied, everything lines up
+    CGRect containerFrame = sourceView.bounds;
+    CGFloat blurInset = 3 * __blurRadius;
+    UIView *containerView = [[UIView alloc] initWithFrame:CGRectInset(containerFrame, -blurInset, -blurInset)];
+    
+    containerView.backgroundColor = [UIColor blackColor];
+    
+    // add snapshot of window to the container
+    UIImageView *windowSnapshotView = [[UIImageView alloc] initWithImage:nil];
+    windowSnapshotView.autoresizingMask = UIViewAutoresizingFlexibleHeight | UIViewAutoresizingFlexibleWidth;
+    windowSnapshotView.frame = CGRectInset(containerView.bounds, blurInset, blurInset);
+    windowSnapshotView.backgroundColor = [UIColor blackColor];
+    
+    self.snapshotView = windowSnapshotView;
+    [containerView addSubview:windowSnapshotView];
+    
+    // only add blurred view if radius is above 0
+    if (self.shouldBlurBackground && __blurRadius) {
+        UIImageView *snapshotView = [[UIImageView alloc] initWithImage:nil];
+        snapshotView.autoresizingMask = UIViewAutoresizingFlexibleHeight | UIViewAutoresizingFlexibleWidth;
+        snapshotView.alpha = 0.0f;
+        snapshotView.userInteractionEnabled = NO;
+        snapshotView.frame = containerView.bounds;
+        self.blurredSnapshotView = snapshotView;
+        [containerView addSubview:snapshotView];
+    }
+    
+    self.snapshotsContainerView = containerView;
+    [self updateSnapshotContents];
+    
+#if defined(DEBUG) && defined(URBMediaFocusViewControllerShowBorders)
+    [self.snapshotsContainerView.layer setBorderColor:[[UIColor yellowColor] CGColor]];
+    [self.snapshotsContainerView.layer setBorderWidth:1];
+    [self.snapshotView.layer setBorderColor:[[UIColor greenColor] CGColor]];
+    [self.snapshotView.layer setBorderWidth:1];
+    [self.blurredSnapshotView.layer setBorderColor:[[UIColor colorWithRed:0 green:0 blue:1 alpha:0.5] CGColor]];
+    [self.blurredSnapshotView.layer setBorderWidth:1];
+#endif
+}
+
+- (void)updateSnapshotContents {
+    if (!self.snapshotsContainerView) {
+        return;
+    }
+    
+    [self layoutBackground];
+    
+    // because we might have polluted the view of our target
+    // we need to hide everything we have added in order to take correct screenshots
+    [self.view setHidden:YES];
+    [self.originalTargetContentHidingView setHidden:YES];
+    [self.snapshotsContainerView setHidden:YES];
+    [self.backgroundView setHidden:YES];
+    
+    UIView *sourceView = [self keyView];
+    UIImage *windowSnapshot = [sourceView snapshotImageWithScale:[UIScreen mainScreen].scale];
+    
+    [self.view setHidden:NO];
+    [self.originalTargetContentHidingView setHidden:NO];
+    [self.snapshotsContainerView setHidden:NO];
+    [self.backgroundView setHidden:NO];
+    
+    [self.snapshotView setImage:windowSnapshot];
+    
+    if (self.blurredSnapshotView) {
+        // create the blurred snapshot
+        
+        // the previous blurred snapshot is in the way for snapshotting the snapshot
+        [self.blurredSnapshotView setHidden:YES];
+        
+        // we might have hidden the unblurred snapshot: bring it back
+        CGFloat alphaBefore = [self.snapshotView alpha];
+        CGFloat snapShotContainerAlpha = self.snapshotsContainerView.alpha;
+        [self.snapshotView setAlpha:1.0];
+        [self.snapshotsContainerView setAlpha:1.0];
+        
+        UIImage *snapshot = [self.snapshotsContainerView snapshotImageWithScale:[UIScreen mainScreen].scale];
+        snapshot = [snapshot URB_applyBlurWithRadius:__blurRadius
+                                           tintColor:[UIColor colorWithWhite:0.0f alpha:__blurTintColorAlpha]
+                               saturationDeltaFactor:__blurSaturationDeltaMask
+                                           maskImage:nil];
+        
+        [self.blurredSnapshotView setImage:snapshot];
+        
+        // reset visibilty states
+        [self.blurredSnapshotView setHidden:NO];
+        [self.snapshotView setAlpha:alphaBefore];
+        [self.snapshotsContainerView setAlpha:snapShotContainerAlpha];
+    }
 }
 
 /**
@@ -463,17 +606,10 @@ static const CGFloat __blurTintColorAlpha = 0.2f;				// defines how much to tint
 - (void)scaleImageForDynamics {
 	_lastZoomScale = self.scrollView.zoomScale;
 	
-	CGRect imageFrame = self.imageView.frame;
+	CGRect imageFrame = self.imageView.bounds;
 	imageFrame.size.width *= _lastZoomScale;
 	imageFrame.size.height *= _lastZoomScale;
-	self.imageView.frame = imageFrame;
-}
-
-- (void)centerScrollViewContents {
-	CGSize contentSize = self.scrollView.contentSize;
-	CGFloat offsetX = (CGRectGetWidth(self.scrollView.frame) > contentSize.width) ? (CGRectGetWidth(self.scrollView.frame) - contentSize.width) / 2.0f : 0.0f;
-	CGFloat offsetY = (CGRectGetHeight(self.scrollView.frame) > contentSize.height) ? (CGRectGetHeight(self.scrollView.frame) - contentSize.height) / 2.0f : 0.0f;
-	self.imageView.center = CGPointMake(self.scrollView.contentSize.width / 2.0f + offsetX, self.scrollView.contentSize.height / 2.0f + offsetY);
+	self.imageView.bounds = imageFrame;
 }
 
 - (void)returnToCenter {
@@ -494,13 +630,14 @@ static const CGFloat __blurTintColorAlpha = 0.2f;				// defines how much to tint
 	
 	[UIView animateWithDuration:__animationDuration delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
 		self.blurredSnapshotView.alpha = 0.0f;
-		self.blurredSnapshotView.transform = CGAffineTransformIdentity;
-		self.snapshotView.transform = CGAffineTransformIdentity;
+		self.snapshotView.alpha = 1.0f;
+		self.snapshotsContainerView.transform = CGAffineTransformIdentity;
 	} completion:^(BOOL finished) {
-		[self.snapshotView removeFromSuperview];
-		[self.blurredSnapshotView removeFromSuperview];
+		[self.snapshotsContainerView removeFromSuperview];
+        [self.originalTargetContentHidingView removeFromSuperview];
 		self.snapshotView = nil;
 		self.blurredSnapshotView = nil;
+        self.originalTargetContentHidingView = nil;
 	}];
 }
 
@@ -668,7 +805,7 @@ static const CGFloat __blurTintColorAlpha = 0.2f;				// defines how much to tint
 		}
 		scrollView.scrollEnabled = YES;
 	}
-	[self centerScrollViewContents];
+    [self centerScrollViewContents];
 }
 
 #pragma mark - UIGestureRecognizerDelegate Methods
@@ -684,6 +821,7 @@ static const CGFloat __blurTintColorAlpha = 0.2f;				// defines how much to tint
 	
 	return shouldRecognize;
 }
+
 
 #pragma mark - NSURLConnectionDelegate
 
@@ -714,6 +852,9 @@ static const CGFloat __blurTintColorAlpha = 0.2f;				// defines how much to tint
 #pragma mark - Orientation Helpers
 
 - (void)deviceOrientationChanged:(NSNotification *)notification {
+    if (self.targetViewController) {
+        return;
+    }
 	NSLog(@"device orientation changed");
 	UIInterfaceOrientation orientation = [UIApplication sharedApplication].statusBarOrientation;
 	if (_currentOrientation != orientation) {
@@ -740,6 +881,9 @@ static const CGFloat __blurTintColorAlpha = 0.2f;				// defines how much to tint
 }
 
 - (void)reposition {
+    if (self.targetViewController) {
+        return;
+    }
 	CGAffineTransform baseTransform = [self transformForOrientation:_currentOrientation];
 	
 	// determine if the rotation we're about to undergo is 90 or 180 degrees
